@@ -9,6 +9,7 @@ import { testBatch } from "../lib/test-proxy.js";
 
 const MAX_QUEUE_SIZE = 6000;
 const QUEUE_SIZE_STOP_THRESHOLD = 600;
+const MAX_TEST_BATCH = 300; // cap per-call work so this finishes well under the 60s function limit
 
 export default async function handler(req, res) {
   if (req.headers["x-refresh-token"] !== process.env.REFRESH_TOKEN) {
@@ -30,12 +31,24 @@ export default async function handler(req, res) {
   const candidates = await fetchAllCandidates();
 
   // Dead set now lives in Redis (KEYS.DEAD_SET), not a committed file.
-  const deadSet = new Set(await redis.smembers(KEYS.DEAD_SET));
-  const fresh = candidates.filter(
-    (c) => !deadSet.has(`${c.protocol}|${c.addr}`),
-  );
+  const [deadMembers, aliveMembers] = await Promise.all([
+    redis.smembers(KEYS.DEAD_SET),
+    redis.smembers(KEYS.ALIVE_SET),
+  ]);
+  const deadSet = new Set(deadMembers);
+  const aliveSet = new Set(aliveMembers);
+  const fresh = candidates.filter((c) => {
+    const key = `${c.protocol}|${c.addr}`;
+    return !deadSet.has(key) && !aliveSet.has(key);
+  });
 
-  const { alive, dead } = await testBatch(fresh, 200);
+  // Only test a bounded batch this call — the untested remainder is simply
+  // "fresh" again on the next invocation (2 min later via cron-job.org),
+  // so nothing is skipped, it's just spread across multiple calls to stay
+  // under Vercel's 60s function timeout.
+  const batch = fresh.slice(0, MAX_TEST_BATCH);
+
+  const { alive, dead } = await testBatch(batch, 200);
 
   if (dead.length) {
     const deadKeys = dead.map((c) => `${c.protocol}|${c.addr}`);
@@ -68,8 +81,8 @@ export default async function handler(req, res) {
 
   return res.status(200).json({
     candidates: candidates.length,
-    tested: fresh.length,
-    skipped_known_dead: candidates.length - fresh.length,
+    fresh_remaining: fresh.length,
+    tested_this_call: batch.length,
     newly_alive: alive.length,
     newly_dead: dead.length,
     pushed_to_queue: pushed,
