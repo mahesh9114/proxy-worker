@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/consume.js": { "maxDuration": 10 },
+    "api/stats.js": { "maxDuration": 10 }
+  },
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ':!data'"
+}
