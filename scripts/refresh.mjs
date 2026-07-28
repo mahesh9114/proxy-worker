@@ -8,9 +8,26 @@ import { testBatch } from "../lib/test-proxy.js";
 import { loadDeadSet, appendDead } from "../lib/dead-store.js";
 
 const MAX_QUEUE_SIZE = 6000; // headroom above the ~2800 serving target
+const QUEUE_SIZE_STOP_THRESHOLD = 600; // if queue already has this many, skip the run
 
 async function main() {
   const start = Date.now();
+
+  // If the queue is already sufficiently full, skip fetching/testing entirely.
+  const currentQueueSize = await redis.llen(KEYS.ALIVE_QUEUE);
+  if (currentQueueSize >= QUEUE_SIZE_STOP_THRESHOLD) {
+    console.error(
+      `Queue size (${currentQueueSize}) >= threshold (${QUEUE_SIZE_STOP_THRESHOLD}). Skipping this run.`,
+    );
+    const summary = {
+      skipped: true,
+      reason: `queue_size ${currentQueueSize} >= ${QUEUE_SIZE_STOP_THRESHOLD}`,
+      queue_size: currentQueueSize,
+      ms: Date.now() - start,
+    };
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
 
   console.error("Fetching candidate lists...");
   const candidates = await fetchAllCandidates();
