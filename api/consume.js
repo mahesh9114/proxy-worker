@@ -8,14 +8,18 @@ export default async function handler(req, res) {
   const count = Math.min(parseInt(req.query.count || "1", 10), 500);
 
   const items = await redis.lpop(KEYS.ALIVE_QUEUE, count);
-  const proxies = (items || []).map((i) => JSON.parse(i));
+  // Upstash's client auto-deserializes JSON on read, so items are already
+  // objects — only JSON.parse if we somehow got a raw string back.
+  const proxies = (items || []).map((i) =>
+    typeof i === "string" ? JSON.parse(i) : i,
+  );
 
   // Remove from the dedupe guard so they can be re-queued in a future refresh
   // if they get tested alive again (they've now left the ready queue).
   if (proxies.length) {
     await redis.srem(
       KEYS.ALIVE_SET,
-      ...proxies.map((c) => `${c.protocol}|${c.addr}`)
+      ...proxies.map((c) => `${c.protocol}|${c.addr}`),
     );
   }
 
