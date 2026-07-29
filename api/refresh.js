@@ -46,11 +46,25 @@ export default async function handler(req, res) {
     return !deadSet.has(key) && !aliveSet.has(key);
   });
 
-  // Only test a bounded batch this call — the untested remainder is simply
-  // "fresh" again on the next invocation (2 min later via cron-job.org),
-  // so nothing is skipped, it's just spread across multiple calls to stay
-  // under Vercel's 60s function timeout.
-  const batch = fresh.slice(0, MAX_TEST_BATCH);
+  // Only test a bounded batch this call, to stay under Vercel's 60s function
+  // timeout. Since nothing here remembers per-call which candidates were just
+  // tested dead (see note above), always starting from index 0 would mean
+  // repeatedly re-testing the same leading slice of `fresh` forever whenever
+  // it's front-loaded with dead entries — never reaching the rest of the
+  // list. Instead we rotate through `fresh` using a small Redis counter, so
+  // every fresh candidate eventually gets tested across successive calls.
+  const total = fresh.length;
+  let batch = [];
+  let offset = 0;
+  if (total > 0) {
+    offset = Number((await redis.get(KEYS.REFRESH_OFFSET)) || 0) % total;
+    const end = offset + MAX_TEST_BATCH;
+    batch =
+      end <= total
+        ? fresh.slice(offset, end)
+        : fresh.slice(offset).concat(fresh.slice(0, end - total));
+    await redis.set(KEYS.REFRESH_OFFSET, (offset + batch.length) % total);
+  }
 
   const { alive, dead } = await testBatch(batch, 200);
 
