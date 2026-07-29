@@ -1,11 +1,19 @@
 import { redis, KEYS } from "../lib/redis.js";
 import { fetchAllCandidates } from "../lib/sources.js";
 import { testBatch } from "../lib/test-proxy.js";
+import { loadDeadSet } from "../lib/dead-store.js";
 
-// Vercel functions have no persistent disk / git access, so unlike
-// scripts/refresh.mjs (run by GitHub Actions), this endpoint stores the
-// dead-proxy log in Redis instead of committing data/dead-proxies.txt.
-// KEYS.DEAD_SET must exist in lib/redis.js (see note below).
+// Vercel functions have no git-write access, so this endpoint can READ
+// data/dead-proxies.txt (it's part of the deployed bundle) to skip known-dead
+// candidates, but it can't append to it or commit it back — only the GitHub
+// Action (scripts/refresh.mjs) does that.
+//
+// Consequence: any proxy that dies for the first time *here* isn't recorded
+// anywhere — it just gets retested on the next call to this endpoint, or on
+// the next GitHub Action run, whichever comes first. That's the tradeoff for
+// not touching Redis for dead-tracking. If that retesting cost bothers you,
+// the fix is to stop calling this endpoint and rely on the GitHub Action
+// alone (see README) rather than reintroducing a Redis dead set.
 
 const MAX_QUEUE_SIZE = 6000;
 const QUEUE_SIZE_STOP_THRESHOLD = 600;
@@ -30,12 +38,8 @@ export default async function handler(req, res) {
 
   const candidates = await fetchAllCandidates();
 
-  // Dead set now lives in Redis (KEYS.DEAD_SET), not a committed file.
-  const [deadMembers, aliveMembers] = await Promise.all([
-    redis.smembers(KEYS.DEAD_SET),
-    redis.smembers(KEYS.ALIVE_SET),
-  ]);
-  const deadSet = new Set(deadMembers);
+  const deadSet = loadDeadSet(); // from data/dead-proxies.txt, not Redis
+  const aliveMembers = await redis.smembers(KEYS.ALIVE_SET);
   const aliveSet = new Set(aliveMembers);
   const fresh = candidates.filter((c) => {
     const key = `${c.protocol}|${c.addr}`;
@@ -50,9 +54,9 @@ export default async function handler(req, res) {
 
   const { alive, dead } = await testBatch(batch, 200);
 
+  // Newly-dead ones are NOT written anywhere here (see note above) — just
+  // counted for the response. They'll be retested next time.
   if (dead.length) {
-    const deadKeys = dead.map((c) => `${c.protocol}|${c.addr}`);
-    await redis.sadd(KEYS.DEAD_SET, ...deadKeys);
     await redis.incrby(KEYS.DEAD_COUNT, dead.length);
   }
 
