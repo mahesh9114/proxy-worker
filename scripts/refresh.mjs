@@ -9,6 +9,7 @@ import { loadDeadSet, appendDead } from "../lib/dead-store.js";
 
 const MAX_QUEUE_SIZE = 6000; // headroom above the ~2800 serving target
 const QUEUE_SIZE_STOP_THRESHOLD = 600; // if queue already has this many, skip the run
+const MAX_TEST_BATCH = 50000; // cap per-run work so one run doesn't take hours
 
 async function main() {
   const start = Date.now();
@@ -33,14 +34,27 @@ async function main() {
   const candidates = await fetchAllCandidates();
   console.error(`Fetched ${candidates.length} candidates.`);
 
-  // Skip proxies already known dead (from the repo log, not Redis).
+  // Skip proxies already known dead (from the repo log, not Redis) or
+  // already alive-and-queued (no need to retest until consumed).
   const deadSet = loadDeadSet();
-  const fresh = candidates.filter(
-    (c) => !deadSet.has(`${c.protocol}|${c.addr}`),
-  );
-  console.error(`${fresh.length} are new (not in dead log). Testing...`);
+  const aliveMembers = await redis.smembers(KEYS.ALIVE_SET);
+  const aliveSet = new Set(aliveMembers);
+  const fresh = candidates.filter((c) => {
+    const key = `${c.protocol}|${c.addr}`;
+    return !deadSet.has(key) && !aliveSet.has(key);
+  });
+  console.error(`${fresh.length} are new (not dead, not already queued).`);
 
-  const { alive, dead } = await testBatch(fresh, 200);
+  // Cap how many we test in a single run. With this many sources, `fresh`
+  // can be hundreds of thousands of candidates on a big backlog — testing
+  // all of them in one go can take hours. Newly-dead ones get appended to
+  // data/dead-proxies.txt and committed at the end of this run, so next
+  // run's `fresh` naturally excludes them and the batch slides forward
+  // through the backlog over successive runs.
+  const batch = fresh.slice(0, MAX_TEST_BATCH);
+  console.error(`Testing ${batch.length} of ${fresh.length}...`);
+
+  const { alive, dead } = await testBatch(batch, 800);
   console.error(`Done testing: ${alive.length} alive, ${dead.length} dead.`);
 
   // Append newly-dead ones to the repo log so they're never retested again.
@@ -77,8 +91,9 @@ async function main() {
 
   const summary = {
     candidates: candidates.length,
-    tested: fresh.length,
-    skipped_known_dead: candidates.length - fresh.length,
+    fresh_remaining: fresh.length,
+    tested_this_run: batch.length,
+    skipped_known_dead_or_alive: candidates.length - fresh.length,
     newly_alive: alive.length,
     newly_dead: dead.length,
     pushed_to_queue: pushed,

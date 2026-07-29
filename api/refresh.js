@@ -17,7 +17,7 @@ import { loadDeadSet } from "../lib/dead-store.js";
 
 const MAX_QUEUE_SIZE = 6000;
 const QUEUE_SIZE_STOP_THRESHOLD = 600;
-const MAX_TEST_BATCH = 1500; // cap per-call work so this finishes well under the 60s function limit
+const MAX_TEST_BATCH = 6000; // cap per-call work so this finishes well under the 60s function limit
 
 export default async function handler(req, res) {
   if (req.headers["x-refresh-token"] !== process.env.REFRESH_TOKEN) {
@@ -63,7 +63,7 @@ export default async function handler(req, res) {
     // timeout.
     const batch = fresh.slice(0, MAX_TEST_BATCH);
 
-    const { alive, dead } = await testBatch(batch, 200);
+    const { alive, dead } = await testBatch(batch, 500);
 
     // Newly-dead ones are NOT written anywhere here (see note above) — just
     // counted for the response. They'll be retested next time.
