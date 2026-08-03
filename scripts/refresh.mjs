@@ -9,7 +9,7 @@ import { loadDeadSet, appendDead } from "../lib/dead-store.js";
 
 const MAX_QUEUE_SIZE = 6000; // headroom above the ~2800 serving target
 const QUEUE_SIZE_STOP_THRESHOLD = 600; // if queue already has this many, skip the run
-const MAX_TEST_BATCH = 50000; // cap per-run work so one run doesn't take hours
+const MAX_TEST_BATCH = 5000; // cap per-run work so one run doesn't take hours
 
 async function main() {
   const start = Date.now();
